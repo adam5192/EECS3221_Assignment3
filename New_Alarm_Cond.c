@@ -208,7 +208,7 @@ void parse_and_insert_request(char* line) {
 
     buffer[insert_idx] = req;
     printf("Main Thread has Inserted Alarm_Request_Type <%s> Request (%d) at %ld: %ld into Circular_Buffer Index: %d\n",
-           request_type_to_str(req.type), req.alarm_id, time(NULL), req.timestamp, insert_idx);
+           REQUEST_TYPE_LOOKUP[req.type], req.alarm_id, time(NULL), req.timestamp, insert_idx);
     insert_idx = (insert_idx + 1) % BUFFER_SIZE;
 
     pthread_mutex_unlock(&buffer_mutex);
