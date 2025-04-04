@@ -41,6 +41,20 @@ pthread_mutex_t buffer_mutex = PTHREAD_MUTEX_INITIALIZER;
 // Thread declarations
 pthread_t main_thread;
 pthread_t consumer_thread;
+pthread_t change_alarm_thread;
+
+// Linked lists
+typedef struct AlarmNode {
+    AlarmRequest req;
+    struct AlarmNode* next;
+} AlarmNode;
+
+AlarmNode* alarm_list = NULL;
+AlarmNode* change_alarm_list = NULL;
+
+// Mutex and condition variable for change alarm list
+pthread_mutex_t change_alarm_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t change_alarm_cond = PTHREAD_COND_INITIALIZER;
 
 // Utility function to convert RequestType to string
 const char* request_type_to_str(RequestType type) {
@@ -53,6 +67,40 @@ const char* request_type_to_str(RequestType type) {
         case VIEW_ALARMS: return "View_Alarms";
         default: return "Unknown";
     }
+}
+
+// Insert into change alarm list (sorted by timestamp)
+void insert_change_alarm(AlarmRequest req) {
+    pthread_mutex_lock(&change_alarm_mutex);
+
+    AlarmNode* node = malloc(sizeof(AlarmNode));
+    node->req = req;
+    node->next = NULL;
+
+    if (!change_alarm_list || difftime(req.timestamp, change_alarm_list->req.timestamp) < 0) {
+        node->next = change_alarm_list;
+        change_alarm_list = node;
+    } else {
+        AlarmNode* curr = change_alarm_list;
+        while (curr->next && difftime(req.timestamp, curr->next->req.timestamp) >= 0)
+            curr = curr->next;
+        node->next = curr->next;
+        curr->next = node;
+    }
+
+    pthread_cond_signal(&change_alarm_cond);
+    pthread_mutex_unlock(&change_alarm_mutex);
+}
+
+// Find start alarm by ID in alarm list
+AlarmNode* find_start_alarm(int alarm_id) {
+    AlarmNode* curr = alarm_list;
+    while (curr) {
+        if (curr->req.alarm_id == alarm_id && curr->req.type == START_ALARM)
+            return curr;
+        curr = curr->next;
+    }
+    return NULL;
 }
 
 // Consumer thread function
@@ -69,6 +117,63 @@ void* consumer_thread_func(void* arg) {
 
         printf("Consumer Thread has Retrieved Alarm_Request_Type <%s> Request (%d) at %ld: %ld from Circular_Buffer Index: %d\n",
                request_type_to_str(req.type), req.alarm_id, time(NULL), req.timestamp, (remove_idx - 1 + BUFFER_SIZE) % BUFFER_SIZE);
+
+        if (req.type == CHANGE_ALARM) {
+            insert_change_alarm(req);
+        } else {
+            AlarmNode* node = malloc(sizeof(AlarmNode));
+            node->req = req;
+            node->next = NULL;
+            pthread_mutex_lock(&buffer_mutex);
+            node->next = alarm_list;
+            alarm_list = node;
+            pthread_mutex_unlock(&buffer_mutex);
+        }
+    }
+}
+
+// Change Alarm Thread
+void* change_alarm_thread_func(void* arg) {
+    while (1) {
+        pthread_mutex_lock(&change_alarm_mutex);
+
+        while (change_alarm_list == NULL) {
+            pthread_cond_wait(&change_alarm_cond, &change_alarm_mutex);
+        }
+
+        AlarmNode* change_node = change_alarm_list;
+        change_alarm_list = change_alarm_list->next;
+
+        pthread_mutex_unlock(&change_alarm_mutex);
+
+        pthread_mutex_lock(&buffer_mutex);
+        AlarmNode* start_node = find_start_alarm(change_node->req.alarm_id);
+
+        if (start_node && difftime(change_node->req.timestamp, start_node->req.timestamp) > 0) {
+            start_node->req.group_id = change_node->req.group_id;
+            start_node->req.interval = change_node->req.interval;
+            start_node->req.timestamp = change_node->req.timestamp;
+            strncpy(start_node->req.message, change_node->req.message, MAX_MSG_LEN);
+
+            printf("Change Alarm Thread Has Changed Alarm(%d) at %ld: Group(%d) %ld %d %s\n",
+                   change_node->req.alarm_id,
+                   time(NULL),
+                   change_node->req.group_id,
+                   change_node->req.timestamp,
+                   change_node->req.interval,
+                   change_node->req.message);
+        } else {
+            printf("Invalid Change Alarm Request(%d) at %ld: Group(%d) %ld %d %s\n",
+                   change_node->req.alarm_id,
+                   time(NULL),
+                   change_node->req.group_id,
+                   change_node->req.timestamp,
+                   change_node->req.interval,
+                   change_node->req.message);
+        }
+
+        pthread_mutex_unlock(&buffer_mutex);
+        free(change_node);
     }
 }
 
@@ -118,8 +223,9 @@ int main() {
     sem_init(&empty, 0, BUFFER_SIZE);
     sem_init(&full, 0, 0);
 
-    // Start consumer thread
+    // Start consumer and change alarm threads
     pthread_create(&consumer_thread, NULL, consumer_thread_func, NULL);
+    pthread_create(&change_alarm_thread, NULL, change_alarm_thread_func, NULL);
 
     // Main input loop
     char line[256];
@@ -130,12 +236,12 @@ int main() {
     }
 
     pthread_join(consumer_thread, NULL);
+    pthread_join(change_alarm_thread, NULL);
     return 0;
 }
 
 /* TODO */
 void* start_alarm_thread_func(void* arg) { return NULL; }
-void* change_alarm_thread_func(void* arg) { return NULL; }
 void* suspend_reactivate_thread_func(void* arg) { return NULL; }
 void* remove_alarm_thread_func(void* arg) { return NULL; }
 void* view_alarms_thread_func(void* arg) { return NULL; }
