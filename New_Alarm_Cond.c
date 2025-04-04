@@ -5,6 +5,7 @@
 #include <semaphore.h>
 #include <unistd.h>
 #include <time.h>
+#include "errors.h"
 
 #define BUFFER_SIZE 4
 #define MAX_MSG_LEN 128
@@ -50,7 +51,11 @@ pthread_mutex_t buffer_mutex = PTHREAD_MUTEX_INITIALIZER;
 // Thread declarations
 pthread_t main_thread;
 pthread_t consumer_thread;
+pthread_t start_alarm_thread;
 pthread_t change_alarm_thread;
+pthread_t suspend_reactivate_alarm_thread;
+pthread_t remove_alarm_thread;
+pthread_t view_alarm_thread;
 
 // Linked lists
 typedef struct alarm_node {
@@ -64,6 +69,17 @@ alarm_node_t* change_alarm_list = NULL;
 // Mutex and condition variable for change alarm list
 pthread_mutex_t change_alarm_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t change_alarm_cond = PTHREAD_COND_INITIALIZER;
+pthread_cond_t view_alarm_cond = PTHREAD_COND_INITIALIZER;
+
+void* consumer_thread_func(void* arg);
+void* start_alarm_thread_func(void* arg);
+void* change_alarm_thread_func(void* arg);
+void* suspend_reactivate_thread_func(void* arg);
+void* remove_alarm_thread_func(void* arg);
+void* view_alarm_thread_func(void* arg);
+
+void parse_and_insert_request(char* line);
+
 
 
 // Insert into change alarm list (sorted by timestamp)
@@ -174,6 +190,42 @@ void* change_alarm_thread_func(void* arg) {
     }
 }
 
+// ========================= VIEW ALARMS THREAD =========================
+void *view_alarm_thread_func(void *arg) {
+  while (1) {
+    // need to block till we have a view request
+    int status = pthread_cond_wait(&view_alarm_cond, &buffer_mutex);
+    if(status != 0) err_abort(status, "cond_wait in view_alarmas_thread");
+    sleep(1);
+  }
+}
+
+int main() {
+    // Init semaphores
+    sem_init(&empty, 0, BUFFER_SIZE);
+    sem_init(&full, 0, 0);
+
+    // Start consumer and change alarm threads
+    pthread_create(&consumer_thread, NULL, consumer_thread_func, NULL);
+    pthread_create(&start_alarm_thread, NULL, start_alarm_thread_func, NULL);
+    pthread_create(&change_alarm_thread, NULL, change_alarm_thread_func, NULL);
+    pthread_create(&suspend_reactivate_alarm_thread, NULL, suspend_reactivate_thread_func, NULL);
+    pthread_create(&remove_alarm_thread, NULL, remove_alarm_thread_func, NULL);
+    pthread_create(&view_alarm_thread, NULL, view_alarm_thread_func, NULL);
+
+    // Main input loop
+    char line[256];
+    while (1) {
+        printf("Alarm> ");
+        if (fgets(line, sizeof(line), stdin) == NULL) break;
+        parse_and_insert_request(line);
+    }
+
+    pthread_join(consumer_thread, NULL);
+    pthread_join(change_alarm_thread, NULL);
+    return 0;
+}
+
 // Parse user input and push to circular buffer
 void parse_and_insert_request(char* line) {
     alarm_request_t req;
@@ -198,6 +250,8 @@ void parse_and_insert_request(char* line) {
         sscanf(line, "Reactivate_Alarm(%d)", &req.alarm_id);
     } else if (strncmp(line, "View_Alarms", 11) == 0) {
         req.type = VIEW_ALARMS;
+        pthread_cond_signal(&view_alarm_cond);
+
     } else {
         fprintf(stderr, "Invalid request format.\n");
         return;
@@ -215,31 +269,8 @@ void parse_and_insert_request(char* line) {
     sem_post(&full);
 }
 
-int main() {
-    // Init semaphores
-    sem_init(&empty, 0, BUFFER_SIZE);
-    sem_init(&full, 0, 0);
-
-    // Start consumer and change alarm threads
-    pthread_create(&consumer_thread, NULL, consumer_thread_func, NULL);
-    pthread_create(&change_alarm_thread, NULL, change_alarm_thread_func, NULL);
-
-    // Main input loop
-    char line[256];
-    while (1) {
-        printf("Alarm> ");
-        if (fgets(line, sizeof(line), stdin) == NULL) break;
-        parse_and_insert_request(line);
-    }
-
-    pthread_join(consumer_thread, NULL);
-    pthread_join(change_alarm_thread, NULL);
-    return 0;
-}
-
 /* TODO */
 void* start_alarm_thread_func(void* arg) { return NULL; }
 void* suspend_reactivate_thread_func(void* arg) { return NULL; }
 void* remove_alarm_thread_func(void* arg) { return NULL; }
-void* view_alarms_thread_func(void* arg) { return NULL; }
 void* display_alarm_thread_func(void* arg) { return NULL; }
