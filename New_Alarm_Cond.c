@@ -33,7 +33,6 @@ typedef struct alarm_request {
     int alarm_id;
     int group_id;
     int interval;
-    int time;
     time_t timestamp;
     char message[MAX_MSG_LEN];
 } alarm_request_t;
@@ -80,6 +79,7 @@ void* view_alarm_thread_func(void* arg);
 
 void parse_and_insert_request(char* line);
 
+void print_alarm_list(alarm_node_t* node);
 
 
 // Insert into change alarm list (sorted by timestamp)
@@ -225,6 +225,33 @@ int main() {
     pthread_join(change_alarm_thread, NULL);
     return 0;
 }
+
+//request_type_t type;
+//int alarm_id;
+//int group_id;
+//int interval;
+//time_t timestamp;
+//char message[MAX_MSG_LEN];
+void print_alarm_list(alarm_node_t* list) {
+   alarm_node_t* temp = list;
+   int count = 1;
+ 
+   printf("BEGIN\n");
+   while(temp != NULL) {
+     printf("node #: %d, alarm_id: %d, group_id: %d, interval: %d, timestamp: %s, message: %s, pointer: %p\n", 
+         count,
+         temp->req.alarm_id, 
+         temp->req.group_id,
+         temp->req.interval,
+         ctime(&temp->req.timestamp), 
+         temp->req.message,
+         temp
+     );
+     temp = temp->next;
+     ++count;
+   }
+   printf("END\n");
+ }
 
 // Parse user input and push to circular buffer
 void parse_and_insert_request(char* line) {
