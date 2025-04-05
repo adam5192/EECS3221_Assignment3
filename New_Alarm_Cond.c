@@ -209,9 +209,23 @@ void* consumer_thread_func(void* arg) {
             insert_alarm(&change_alarm_list, req.alarm_id, req.group_id, req.interval, req.message);
             printf("Change Alarm (<alarm_id>) Inserted by Consumer Thread<thread-id> into Separate Change Alarm Request List: Group(<group_id>) <Time_Stamp interval time message>\n");
           break;
-
-
+          case CANCEL_ALARM:
+            printf("Cancel Alarm( <alarm_id>) Inserted by Consumer Thread <thread-id> Into Alarm List: Group(<group_id>) <Time_Stamp interval time message>\n");
+            insert_alarm(&alarm_list, req.alarm_id, req.group_id, req.interval, req.message);
+          case SUSPEND_ALARM:
+            printf("Cancel Alarm( <alarm_id>) Inserted by Consumer Thread <thread-id> Into Alarm List: Group(<group_id>) <Time_Stamp interval time message>\n");
+            insert_alarm(&alarm_list, req.alarm_id, req.group_id, req.interval, req.message);
+          break;
+          case REACTIVATE_ALARM:
+            printf("Cancel Alarm( <alarm_id>) Inserted by Consumer Thread <thread-id> Into Alarm List: Group(<group_id>) <Time_Stamp interval time message>\n");
+            insert_alarm(&alarm_list, req.alarm_id, req.group_id, req.interval, req.message);
+          break;
+          case VIEW_ALARMS:
+            printf("Cancel Alarm( <alarm_id>) Inserted by Consumer Thread <thread-id> Into Alarm List: Group(<group_id>) <Time_Stamp interval time message>\n");
+            insert_alarm(&alarm_list, req.alarm_id, req.group_id, req.interval, req.message);
+          break;
         }
+
         print_alarm_list(alarm_list);
         printf("CHANGE ALARM LIST\n");
         print_alarm_list(change_alarm_list);
