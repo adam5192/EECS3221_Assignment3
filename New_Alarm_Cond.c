@@ -101,6 +101,8 @@ void parse_and_insert_request(char* line);
 
 alarm_t* init_alarm_node(int alarm_id, int group_id, int interval, char* msg);
 void print_alarm_list(alarm_t* node);
+void change_alarm_by_timestamp(alarm_t **list, int alarm_id);
+
 
 int reader_count = 0;
 
@@ -151,7 +153,6 @@ void insert_alarm(alarm_t** list, int alarm_id, int group_id, int interval, char
       }
       current = current->link;
   }
-
   time_t now = time(NULL);
   alarm_t* head = *list;
 
@@ -244,36 +245,16 @@ void remove_alarm_by_state(alarm_t **list, int alarm_id, int status) {
     }
 }
 
-void change_alarm_by_timestamp(alarm_t **list, int alarm_id, int status, int target_state) {
-    alarm_t *current = *list;
-    alarm_t *prev = NULL;
-    alarm_t *found = NULL;
-    
-    // Find the node with the given alarm_id and other status
-    while (current != NULL) {
-        if (current->alarm_id == alarm_id && current->status != status) {
-            found = current;
-            break;
-        }
-        current = current->link;
-    }
-
-    // If target node with alarm_id not found, return
-    if (found == NULL) return;
-
-    current = *list;
-    prev = NULL;
-
-    while(current != NULL) {
-      // remove the node if they're not the same and the timestamp is less
-      if(found != current && current->alarm_id == found->alarm_id && current->timestamp < found->timestamp) {
-        current->status = target_state;
-        break;
-      } else {
-        prev = current;
-      }
-      current = current->link;
-    }
+void change_alarm_by_timestamp(alarm_t **list, int alarm_id) {
+  alarm_t* current = get_alarm_by_id(list, alarm_id);
+  alarm_t* to_change = get_alarm_by_id(&alarm_list, alarm_id);
+  if(to_change != NULL && current != NULL) {
+    to_change->alarm_id = current->alarm_id;
+    to_change->group_id = current->group_id;
+    to_change->interval = current->interval;
+    to_change->timestamp = current->timestamp;
+    strcpy(to_change->message, current->message);
+  } 
 }
 
 // Consumer thread function
@@ -289,6 +270,7 @@ void* consumer_thread_func(void* arg) {
         alarm_t req = buffer[remove_idx];
         pthread_mutex_unlock(&buffer_mutex);
         const char* req_type = REQUEST_TYPE_LOOKUP[req.type];
+        long thread_id = pthread_self();
 
         switch(req.type) {
           case START_ALARM:
@@ -298,7 +280,10 @@ void* consumer_thread_func(void* arg) {
           break;
           case CHANGE_ALARM:
             insert_alarm(&change_alarm_list, req.alarm_id, req.group_id, req.interval, req.message);
-            printf("Change Alarm (<alarm_id>) Inserted by Consumer Thread<thread-id> into Separate Change Alarm Request List: Group(<group_id>) <Time_Stamp interval time message>\n");
+            printf("Change Alarm (<%d>) Inserted by Consumer Thread<%ld> into Separate Change Alarm Request List: Group(<group_id>) <Time_Stamp interval time message>\n",
+                req.alarm_id,
+                thread_id
+            );
             pthread_cond_signal(&change_alarm_cond);
           break;
           case CANCEL_ALARM:
@@ -340,6 +325,7 @@ void* consumer_thread_func(void* arg) {
         if (reader_count == 0) {
             sem_post(&writing);  // when no readers we can write
         }
+        sleep(1);
     }
 }
 
@@ -348,6 +334,35 @@ void* change_alarm_thread_func(void* arg) {
   while(1) {
     int status = pthread_cond_wait(&change_alarm_cond, &change_alarm_mutex);
     if(status != 0) err_abort(status, "cond_wait in change_alarms_thread");
+
+    pthread_mutex_lock(&change_alarm_mutex);
+    alarm_t* change_list = change_alarm_list;
+    while(change_list != NULL) {
+      printf("ALSO HERE");
+      int alarm_id = change_list->alarm_id;
+      // search alarm_list
+      pthread_mutex_lock(&alarm_mutex);
+      alarm_t* a_list = alarm_list;
+      int changed = 0;
+      while(a_list != NULL) {
+        if(alarm_id == a_list->alarm_id) {
+          change_alarm_by_timestamp(&alarm_list, alarm_id);
+          printf("Change Alarm Thread <%ld> Has Changed Alarm(<%d> at <alarm_change_time>: Group(<group_id>) <Time_Stamp interval time message>", pthread_self(), alarm_id);
+          changed = 1;
+        }
+        a_list = a_list->link;
+      }
+
+      pthread_mutex_unlock(&alarm_mutex);
+      if(changed == 0) {
+        printf("Invalid Change Alarm Request(<%d> at <invalid change alarm request detection_time>: Group(<group_id>) <Time Stamp time message>", alarm_id);
+        remove_alarm_by_state(&change_alarm_list, alarm_id, CHANGED);
+      }
+      change_list = change_list->link;
+    }
+    pthread_mutex_unlock(&change_alarm_mutex);
+
+    sleep(1);
 
   }
 }
