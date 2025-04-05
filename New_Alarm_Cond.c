@@ -19,27 +19,6 @@ typedef enum request_type {
     VIEW_ALARMS
 } request_type_t;
 
-typedef enum alarm_status {
-  ACTIVE,
-  CANCELLED,
-  CHANGED,
-  SUSPENDED,
-  REACTIVATED,
-  VIEW
-} alarm_status_t;
- 
-typedef struct alarm_tag {
-    request_type_t type;
-    int alarm_id;
-    int group_id;
-    int interval;
-    time_t timestamp;
-    char message[MAX_MSG_LEN];
-    int size;
-    int status;
-    struct alarm_tag* link;
-} alarm_t;
-
 char* REQUEST_TYPE_LOOKUP[] = {
     "START_ALARM",
     "CHANGE_ALARM",
@@ -49,14 +28,16 @@ char* REQUEST_TYPE_LOOKUP[] = {
     "VIEW_ALARMS"
 };
 
-const char* alarm_status_lookup[] = {
-   "ACTIVE",
-   "CANCELLED",
-   "CHANGED",
-   "SUSPENDED",
-   "REACTIVATED",
-   "VIEW"
- };
+typedef struct alarm_tag {
+    request_type_t type;
+    int alarm_id;
+    int group_id;
+    int interval;
+    time_t timestamp;
+    char message[MAX_MSG_LEN];
+    int size;
+    struct alarm_tag* link;
+} alarm_t;
 
 // Circular buffer
 alarm_t buffer[BUFFER_SIZE];
@@ -64,13 +45,14 @@ int insert_idx = 0;
 int remove_idx = 0;
 
 // Synchronization
-sem_t writing;
+sem_t empty;
+sem_t full;
 pthread_mutex_t buffer_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t alarm_mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_mutex_t change_alarm_mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_mutex_t counter_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t view_alarm_cond = PTHREAD_COND_INITIALIZER;
 
 // Thread declarations
+pthread_t main_thread;
 pthread_t consumer_thread;
 pthread_t start_alarm_thread;
 pthread_t change_alarm_thread;
@@ -79,15 +61,10 @@ pthread_t remove_alarm_thread;
 pthread_t view_alarm_thread;
 
 alarm_t* alarm_list = NULL;
-alarm_t* change_alarm_list = NULL;
 
 // Mutex and condition variable for change alarm list
-pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_cond_t insert_buffer_cond = PTHREAD_COND_INITIALIZER;
-pthread_cond_t start_alarm_cond = PTHREAD_COND_INITIALIZER;
+pthread_mutex_t change_alarm_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t change_alarm_cond = PTHREAD_COND_INITIALIZER;
-pthread_cond_t cancel_alarm_cond = PTHREAD_COND_INITIALIZER;
-pthread_cond_t suspend_alarm_cond = PTHREAD_COND_INITIALIZER;
 pthread_cond_t view_alarm_cond = PTHREAD_COND_INITIALIZER;
 
 void* consumer_thread_func(void* arg);
@@ -102,7 +79,6 @@ void parse_and_insert_request(char* line);
 alarm_t* init_alarm_node(int alarm_id, int group_id, int interval, char* msg);
 void print_alarm_list(alarm_t* node);
 
-int reader_count = 0;
 
 //request_type_t type;
 //int alarm_id;
@@ -118,7 +94,6 @@ alarm_t* init_alarm_node(int alarm_id, int group_id, int interval, char* msg) {
    node->link = NULL;
    node->type = 0;
    node->size = 0;
-   node->status = ACTIVE;
    // set data
    node->alarm_id = alarm_id;
    node->interval = interval;
@@ -184,172 +159,77 @@ void insert_alarm(alarm_t** list, int alarm_id, int group_id, int interval, char
   pthread_mutex_unlock(&alarm_mutex);
 }
 
-void remove_alarm_by_timestamp(alarm_t **list, int alarm_id, int status) {
-    alarm_t *current = *list;
-    alarm_t *prev = NULL;
-    alarm_t *found = NULL;
-    
-    // Find the node with the given alarm_id and other status
-    while (current != NULL) {
-        if (current->alarm_id == alarm_id && current->status != status) {
-            found = current;
-            break;
-        }
-        current = current->link;
-    }
 
-    // If target node with alarm_id not found, return
-    if (found == NULL) return;
+//// Insert into change alarm list (sorted by timestamp)
+//void insert_change_alarm(alarm_request_t req) {
+//    pthread_mutex_lock(&change_alarm_mutex);
+//
+//    alarm_node_t* node = malloc(sizeof(alarm_node_t));
+//    node->req = req;
+//    node->next = NULL;
+//
+//    if (!change_alarm_list || difftime(req.timestamp, change_alarm_list->req.timestamp) < 0) {
+//        node->next = change_alarm_list;
+//        change_alarm_list = node;
+//    } else {
+//        alarm_node_t* curr = change_alarm_list;
+//        while (curr->next && difftime(req.timestamp, curr->next->req.timestamp) >= 0)
+//            curr = curr->next;
+//        node->next = curr->next;
+//        curr->next = node;
+//    }
+//
+//    pthread_cond_signal(&change_alarm_cond);
+//    pthread_mutex_unlock(&change_alarm_mutex);
+//}
 
-    current = *list;
-    prev = NULL;
+// Find start alarm by ID in alarm list
+//alarm_node_t* find_start_alarm(int alarm_id) {
+//    alarm_node_t* curr = alarm_list;
+//    while (curr) {
+//        if (curr->req.alarm_id == alarm_id && curr->req.type == START_ALARM)
+//            return curr;
+//        curr = curr->next;
+//    }
+//    return NULL;
+//}
 
-    while(current != NULL) {
-      // remove the node if they're not the same and the timestamp is less
-      if(found != current && current->alarm_id == found->alarm_id && current->timestamp < found->timestamp) {
-        if(prev == NULL) *list = current->link;
-        else { 
-          prev->link = current->link;
-        }
-        free(current);
-        break;
-      } else {
-        prev = current;
-      }
-      current = current->link;
-    }
-}
- 
-void remove_alarm_by_state(alarm_t **list, int alarm_id, int status) {
-    alarm_t *current = *list;
-    alarm_t *prev = NULL;
-    alarm_t *found = NULL;
 
-    current = *list;
-    prev = NULL;
-
-    while(current != NULL) {
-      // remove the node if it's in that state and same alarm id
-      if(current->alarm_id == alarm_id && current->status == status) {
-        if(prev == NULL) *list = current->link;
-        else { 
-          prev->link = current->link;
-        }
-        free(current);
-        break;
-      } else {
-        prev = current;
-      }
-      current = current->link;
-    }
-}
-
-void change_alarm_by_timestamp(alarm_t **list, int alarm_id, int status, int target_state) {
-    alarm_t *current = *list;
-    alarm_t *prev = NULL;
-    alarm_t *found = NULL;
-    
-    // Find the node with the given alarm_id and other status
-    while (current != NULL) {
-        if (current->alarm_id == alarm_id && current->status != status) {
-            found = current;
-            break;
-        }
-        current = current->link;
-    }
-
-    // If target node with alarm_id not found, return
-    if (found == NULL) return;
-
-    current = *list;
-    prev = NULL;
-
-    while(current != NULL) {
-      // remove the node if they're not the same and the timestamp is less
-      if(found != current && current->alarm_id == found->alarm_id && current->timestamp < found->timestamp) {
-        current->status = target_state;
-        break;
-      } else {
-        prev = current;
-      }
-      current = current->link;
+// Utility function to convert RequestType to string
+const char* request_type_to_str(RequestType type) {
+    switch (type) {
+        case START_ALARM: return "Start_Alarm";
+        case CHANGE_ALARM: return "Change_Alarm";
+        case CANCEL_ALARM: return "Cancel_Alarm";
+        case SUSPEND_ALARM: return "Suspend_Alarm";
+        case REACTIVATE_ALARM: return "Reactivate_Alarm";
+        case VIEW_ALARMS: return "View_Alarms";
+        default: return "Unknown";
     }
 }
 
 // Consumer thread function
 void* consumer_thread_func(void* arg) {
     while (1) {
-        pthread_cond_wait(&insert_buffer_cond, &buffer_mutex);  // Signal the waiting thread
-        reader_count++;
-        // first reader needs to lock out the insert thread
-        if(reader_count == 1) {
-          sem_wait(&writing);
-        }
+        sem_wait(&full);
+        pthread_mutex_lock(&buffer_mutex);
 
         alarm_t req = buffer[remove_idx];
-        pthread_mutex_unlock(&buffer_mutex);
-        const char* req_type = REQUEST_TYPE_LOOKUP[req.type];
-
-        switch(req.type) {
-          case START_ALARM:
-            printf("Start_Alarm( <alarm_id>) Inserted by Consumer Thread <thread-id> Into Alarm List: Group(<group_id>) <Time_Stamp interval time message>\n");
-            insert_alarm(&alarm_list, req.alarm_id, req.group_id, req.interval, req.message);
-            pthread_cond_signal(&start_alarm_cond);
-          break;
-          case CHANGE_ALARM:
-            insert_alarm(&change_alarm_list, req.alarm_id, req.group_id, req.interval, req.message);
-            printf("Change Alarm (<alarm_id>) Inserted by Consumer Thread<thread-id> into Separate Change Alarm Request List: Group(<group_id>) <Time_Stamp interval time message>\n");
-            pthread_cond_signal(&change_alarm_cond);
-          break;
-          case CANCEL_ALARM:
-            printf("Cancel Alarm( <alarm_id>) Inserted by Consumer Thread <thread-id> Into Alarm List: Group(<group_id>) <Time_Stamp interval time message>\n");
-            insert_alarm(&alarm_list, req.alarm_id, req.group_id, req.interval, req.message);
-            pthread_cond_signal(&cancel_alarm_cond);
-          case SUSPEND_ALARM:
-            printf("Cancel Alarm( <alarm_id>) Inserted by Consumer Thread <thread-id> Into Alarm List: Group(<group_id>) <Time_Stamp interval time message>\n");
-            insert_alarm(&alarm_list, req.alarm_id, req.group_id, req.interval, req.message);
-            pthread_cond_signal(&suspend_alarm_cond);
-          break;
-          case REACTIVATE_ALARM:
-            printf("Cancel Alarm( <alarm_id>) Inserted by Consumer Thread <thread-id> Into Alarm List: Group(<group_id>) <Time_Stamp interval time message>\n");
-            pthread_cond_signal(&suspend_alarm_cond);
-          break;
-          case VIEW_ALARMS:
-            printf("Cancel Alarm( <alarm_id>) Inserted by Consumer Thread <thread-id> Into Alarm List: Group(<group_id>) <Time_Stamp interval time message>\n");
-            insert_alarm(&alarm_list, req.alarm_id, req.group_id, req.interval, req.message);
-            pthread_cond_signal(&view_alarm_cond);
-          break;
-        }
-
-        print_alarm_list(alarm_list);
-        printf("CHANGE ALARM LIST\n");
-        print_alarm_list(change_alarm_list);
-
-        printf("Consumer Thread has Retrieved Alarm_Request_Type <%s> Request (%d) at %ld: %ld from Circular_Buffer Index: %d\n",
-           req_type, 
-           req.alarm_id, 
-           time(NULL), 
-           req.timestamp, 
-           remove_idx
-        );
-        printf("Above <%d> is the Circular-Buffer array index from which the consumer thread retrieved the alarm request. <%s> can be either “Start_Alarm”, or “Change_Alarm”, or “Cancel_Alarm”, or “Suspend_Alarm”, or “Reactivate_Alarm”, or “View Alarms\n", remove_idx, req_type);
-
         remove_idx = (remove_idx + 1) % BUFFER_SIZE;
 
-        reader_count--;
-        if (reader_count == 0) {
-            sem_post(&writing);  // when no readers we can write
-        }
+        pthread_mutex_unlock(&buffer_mutex);
+        sem_post(&empty);
+
+        printf("Consumer Thread has Retrieved Alarm_Request_Type <%s> Request (%d) at %ld: %ld from Circular_Buffer Index: %d\n",
+               REQUEST_TYPE_LOOKUP[req.type], req.alarm_id, time(NULL), req.timestamp, (remove_idx - 1 + BUFFER_SIZE) % BUFFER_SIZE);
     }
 }
 
 //// Change Alarm Thread
 void* change_alarm_thread_func(void* arg) {
-  while(1) {
-    int status = pthread_cond_wait(&change_alarm_cond, &change_alarm_mutex);
-    if(status != 0) err_abort(status, "cond_wait in change_alarms_thread");
+    while (1) {
 
-  }
+    }
 }
 
 // ========================= VIEW ALARMS THREAD =========================
@@ -362,10 +242,85 @@ void *view_alarm_thread_func(void *arg) {
   }
 }
 
+// ========================= REMOVE ALARMS THREAD =========================
+void* remove_alarm_thread_func(void* arg) 
+{
+    while (1) 
+    {
+        sleep(1);  
+        const time_t current_time = time(NULL);
+        
+        pthread_mutex_lock(&alarm_mutex);
+        
+        alarm_t** current = &alarm_list;
+        
+        // process all alarms in the list
+        while (*current != NULL) 
+        {
+            alarm_t* this_alarm = *current;
+            bool alarm_removed = false;
+            
+            // process cancellation requests
+            if (this_alarm->type == CANCEL_ALARM) 
+            {
+                alarm_t** search_ptr = &alarm_list;
+                
+                // look for matching start alarm 
+                while (*search_ptr != NULL) 
+                {
+                    alarm_t* candidate = *search_ptr;
+                    
+                    // if alarm is matching and has earlier time stamp remove 
+                    if (candidate->type == START_ALARM &&
+                        candidate->alarm_id == this_alarm->alarm_id &&
+                        difftime(candidate->timestamp, this_alarm->timestamp) < 0) 
+                    {
+                        
+                        *search_ptr = candidate->link;
+                        
+                        printf("Alarm(%d) Cancelled at %ld | Group(%d) | Interval: %ds\n",
+                              candidate->alarm_id, current_time, 
+                              candidate->group_id, candidate->interval);
+                              
+                        free(candidate);
+                        break;
+                    }
+                    search_ptr = &(*search_ptr)->link;
+                }
+                
+                *current = this_alarm->link;
+                free(this_alarm);
+                alarm_removed = true;
+            }
+            // check for expired alarms
+            else if (this_alarm->type == START_ALARM && 
+                    difftime(current_time, this_alarm->timestamp) >= this_alarm->interval) 
+            {
+                *current = this_alarm->link;
+                
+                printf("Alarm(%d) Expired at %ld | Group(%d) | Interval: %ds\n",
+                      this_alarm->alarm_id, current_time,
+                      this_alarm->group_id, this_alarm->interval);
+                      
+                free(this_alarm);
+                alarm_removed = true;
+            }
+            
+            if (!alarm_removed) {
+                current = &(*current)->link;
+            }
+        }
+        
+        pthread_mutex_unlock(&alarm_mutex);
+    }
+    
+    return NULL;
+}
+
 int main() {
     // Init semaphores
-    sem_init(&writing, 0, 1);
-    pthread_mutex_init(&mutex, NULL);
+    sem_init(&empty, 0, BUFFER_SIZE);
+    sem_init(&full, 0, 0);
 
     // Start consumer and change alarm threads
     pthread_create(&consumer_thread, NULL, consumer_thread_func, NULL);
@@ -381,63 +336,11 @@ int main() {
         printf("Alarm> ");
         if (fgets(line, sizeof(line), stdin) == NULL) break;
         parse_and_insert_request(line);
-        sleep(1); // let other threads finish
-        
     }
 
     pthread_join(consumer_thread, NULL);
     pthread_join(change_alarm_thread, NULL);
     return 0;
-}
-
-// Parse user input and push to circular buffer
-void parse_and_insert_request(char* line) {
-    alarm_t req;
-    time(&req.timestamp);
-    req.group_id = 0;
-    req.interval = 0;
-
-    if (strncmp(line, "Start_Alarm(", 12) == 0) {
-        req.type = START_ALARM;
-        sscanf(line, "Start_Alarm(%d): Group(%d) %d %[^\n]", &req.alarm_id, &req.group_id, &req.interval, req.message);
-    } else if (strncmp(line, "Change_Alarm(", 13) == 0) {
-        req.type = CHANGE_ALARM;
-    } else if (strncmp(line, "Cancel_Alarm(", 13) == 0) {
-        req.type = CANCEL_ALARM;
-        sscanf(line, "Cancel_Alarm(%d)", &req.alarm_id);
-    } else if (strncmp(line, "Suspend_Alarm(", 14) == 0) {
-        req.type = SUSPEND_ALARM;
-        sscanf(line, "Suspend_Alarm(%d)", &req.alarm_id);
-    } else if (strncmp(line, "Reactivate_Alarm(", 17) == 0) {
-        req.type = REACTIVATE_ALARM;
-        sscanf(line, "Reactivate_Alarm(%d)", &req.alarm_id);
-    } else if (strncmp(line, "View_Alarms", 11) == 0) {
-        req.type = VIEW_ALARMS;
-        pthread_cond_signal(&view_alarm_cond);
-
-    } else {
-        fprintf(stderr, "Invalid request format.\n");
-        return;
-    }
-
-    sem_wait(&writing);
-    pthread_mutex_lock(&buffer_mutex);
-
-    buffer[insert_idx] = req;
-    time_t now = time(NULL);
-    printf("Main Thread has Inserted Alarm_Request_Type <%s> Request (%d) at %s: %s into Circular_Buffer Index: %d\n",
-           REQUEST_TYPE_LOOKUP[req.type], 
-           req.alarm_id, 
-           ctime(&now), 
-           ctime(&req.timestamp), 
-           insert_idx
-    );
-
-    insert_idx = (insert_idx + 1) % BUFFER_SIZE;
-
-    pthread_mutex_unlock(&buffer_mutex);
-    pthread_cond_signal(&insert_buffer_cond);
-    sem_post(&writing);
 }
 
 //request_type_t type;
@@ -465,120 +368,79 @@ void print_alarm_list(alarm_t* list) {
      ++count;
    }
    printf("END\n");
+ }
+
+// Parse user input and push to circular buffer
+void parse_and_insert_request(char* line) {
+    alarm_t req;
+    time(&req.timestamp);
+    req.group_id = 0;
+    req.interval = 0;
+
+    if (strncmp(line, "Start_Alarm(", 12) == 0) {
+        req.type = START_ALARM;
+        sscanf(line, "Start_Alarm(%d): Group(%d) %d %[^\n]", &req.alarm_id, &req.group_id, &req.interval, req.message);
+    } else if (strncmp(line, "Change_Alarm(", 13) == 0) {
+        req.type = CHANGE_ALARM;
+        sscanf(line, "Change_Alarm(%d): Group(%d) %d %[^\n]", &req.alarm_id, &req.group_id, &req.interval, req.message);
+    } else if (strncmp(line, "Cancel_Alarm(", 13) == 0) {
+        req.type = CANCEL_ALARM;
+        sscanf(line, "Cancel_Alarm(%d)", &req.alarm_id);
+    } else if (strncmp(line, "Suspend_Alarm(", 14) == 0) {
+        req.type = SUSPEND_ALARM;
+        sscanf(line, "Suspend_Alarm(%d)", &req.alarm_id);
+    } else if (strncmp(line, "Reactivate_Alarm(", 17) == 0) {
+        req.type = REACTIVATE_ALARM;
+        sscanf(line, "Reactivate_Alarm(%d)", &req.alarm_id);
+    } else if (strncmp(line, "View_Alarms", 11) == 0) {
+        req.type = VIEW_ALARMS;
+        pthread_cond_signal(&view_alarm_cond);
+
+    } else {
+        fprintf(stderr, "Invalid request format.\n");
+        return;
+    }
+
+    sem_wait(&empty);
+    pthread_mutex_lock(&buffer_mutex);
+
+    buffer[insert_idx] = req;
+    printf("Main Thread has Inserted Alarm_Request_Type <%s> Request (%d) at %ld: %ld into Circular_Buffer Index: %d\n",
+           REQUEST_TYPE_LOOKUP[req.type], req.alarm_id, time(NULL), req.timestamp, insert_idx);
+    insert_idx = (insert_idx + 1) % BUFFER_SIZE;
+
+    pthread_mutex_unlock(&buffer_mutex);
+    sem_post(&full);
 }
 
-void* start_alarm_thread_func(void* arg) { }
-void* remove_alarm_thread_func(void* arg) { }
-void* suspend_reactivate_thread_func(void* arg) { }
+int main() {
+    // Init semaphores
+    sem_init(&empty, 0, BUFFER_SIZE);
+    sem_init(&full, 0, 0);
 
- // ========================= VIEW ALARMS THREAD =========================
-//void *view_alarms_thread_func(void *arg) {
-//  while (1) {
-//    // need to block till we have a view request
-//    int status = pthread_cond_wait(&view_alarm_cond, &alarm_mutex);
-//    if(status != 0) err_abort(status, "cond_wait in view_alarmas_thread");
-//    alarm_t* list = alarm_list;
-//    time_t now = time(NULL);
-//    int count = 1;
-//
-//    printf("View Alarms at View Time <%s>:\n", ctime(&now));
-//    while(list != NULL) {
-//      printf(view_thread_alarm_msg,
-//        count,
-//        list->alarm_id,
-//        list->req_type,
-//        ctime(&list->timestamp),
-//        list->timestamp,
-//        list->message,
-//        alarm_status_lookup[list->status],
-//        list->display_thread
-//      );
-//      ++count;
-//      list = list->link;
-//    }
-//    long id = pthread_self();
-//    printf("View Alarms request <%s> Alarm Requests Viewed at View Time <%s>\nprinted by View Alarms Thread %ld\n",
-//      ctime(&view_timestamp),
-//      ctime(&now),
-//      id
-//    );
-//    // remove view request at the end
-//    remove_alarm_by_state(&alarm_list, manage_alarm_id, VIEW);
-//    sleep(1);
-//  }
-//}
-// 
-// // ========================= DISPLAY ALARM THREAD =========================
-// void *display_alarm_thread_func(void *arg) {
-//  pthread_t thread_id = pthread_self();
-//
-//  while (1) {
-//      pthread_mutex_lock(&alarm_mutex);
-//      alarm_t *current = alarm_list;
-//      int active_alarms = 0;
-//
-//      while (current != NULL) {
-//          if (current->display_thread == thread_id) { 
-//              time_t current_time = time(NULL);
-//
-//              // Handle Expired Alarm
-//              if (current->timestamp + current->seconds <= current_time) {
-//                  printf("Display Alarm Thread %lu Stopped Printing Expired Alarm(%d) at %ld: %s\n",
-//                         thread_id, current->alarm_id, current_time, current->message);
-//                  current->display_thread = 0; // Mark as unassigned
-//                  current->status = CANCELLED;
-//                  continue;
-//              }
-//
-//              switch(current->status) {
-//                case SUSPENDED:
-//                  if (current->display_thread != 0) {  // Ensures message prints only once
-//                      printf("Alarm(%d) Print Suspended at %ld: %s\n",
-//                             current->alarm_id, current_time, current->message);
-//                      current->display_thread = 0; // Mark as stopped
-//                  }
-//                  break;
-//                case REACTIVATED:
-//                  printf("Alarm(%d) Print Reactivated at %ld: %s\n",
-//                         current->alarm_id, current_time, current->message);
-//                  current->status = ACTIVE;
-//                  break;
-//                case CANCELLED:
-//                  printf("Display Alarm Thread %lu Stopped Printing Cancelled Alarm(%d) at %ld: %s\n",
-//                         thread_id, current->alarm_id, current_time, current->message);
-//                  current->display_thread = 0;
-//                  break;
-//                case CHANGED:
-//                  printf("Display Alarm Thread %lu Printing Changed Alarm(%d) at %ld: %s\n",
-//                         thread_id, current->alarm_id, current_time, current->message);
-//                  current->status = ACTIVE;
-//                  break;
-//                default:
-//                  // Print Active Alarm
-//                  printf("Alarm (%d) Printed by Alarm Display Thread %lu at %ld: %s\n",
-//                         current->alarm_id, thread_id, current_time, current->message);
-//                  active_alarms++;
-//              }
-//          }
-//          current = current->link;
-//      }
-//
-//      pthread_mutex_unlock(&alarm_mutex);
-//
-//      // If no alarms are assigned, exit the thread and clear thread_pool
-//      if (active_alarms == 0) {
-//          long id = pthread_self();
-//          display_thread_t* thread_pool = (display_thread_t*)arg;
-//          printf("Display Alarm Thread %lu Exiting at %ld\n", thread_id, time(NULL));
-//          // decrement the thread pool thread with same id
-//          for(int i = 0; i < 8; ++i) {
-//            if(thread_pool[i].display_alarm_thread == id) {
-//              thread_pool[i].display_alarm_thread = 0;
-//              thread_pool[i].assigned = 0;
-//            }
-//          }
-//          pthread_exit(NULL);
-//      }
-//      sleep(5); // Print every 5 seconds
-//  }
-//}
+    pthread_t view_thread;
+    // Start consumer thread
+    pthread_create(&consumer_thread, NULL, consumer_thread_func, NULL);
+    if (pthread_create(&view_thread, NULL, view_alarms_thread_func, NULL) != 0) {
+        perror("Failed to create View Alarms Thread");
+        return 1;
+    }
+
+    // Main input loop
+    char line[256];
+    while (1) {
+        printf("Alarm> ");
+        if (fgets(line, sizeof(line), stdin) == NULL) break;
+        parse_and_insert_request(line);
+    }
+
+    pthread_join(consumer_thread, NULL);
+    pthread_join(view_thread, NULL);
+    return 0;
+}
+
+/* TODO */
+void* start_alarm_thread_func(void* arg) { return NULL; }
+void* suspend_reactivate_thread_func(void* arg) { return NULL; }
+void* display_alarm_thread_func(void* arg) { return NULL; }
+
