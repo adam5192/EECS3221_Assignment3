@@ -19,6 +19,27 @@ typedef enum request_type {
     VIEW_ALARMS
 } request_type_t;
 
+typedef enum alarm_status {
+  ACTIVE,
+  CANCELLED,
+  CHANGED,
+  SUSPENDED,
+  REACTIVATED,
+  VIEW
+} alarm_status_t;
+ 
+typedef struct alarm_tag {
+    request_type_t type;
+    int alarm_id;
+    int group_id;
+    int interval;
+    time_t timestamp;
+    char message[MAX_MSG_LEN];
+    int size;
+    int status;
+    struct alarm_tag* link;
+} alarm_t;
+
 char* REQUEST_TYPE_LOOKUP[] = {
     "START_ALARM",
     "CHANGE_ALARM",
@@ -28,27 +49,14 @@ char* REQUEST_TYPE_LOOKUP[] = {
     "VIEW_ALARMS"
 };
 
-typedef struct alarm_tag {
-    request_type_t type;
-    int alarm_id;
-    int group_id;
-    int interval;
-    time_t timestamp;
-    char message[MAX_MSG_LEN];
-    int size;
-    struct alarm_tag* link;
-} alarm_t;
-
-typedef struct change_alarm_tag {
-    request_type_t type;
-    int alarm_id;
-    int group_id;
-    int interval;
-    time_t timestamp;
-    char message[MAX_MSG_LEN];
-    int size;
-    struct alarm_tag* link;
-} change_alarm_t;
+const char* alarm_status_lookup[] = {
+   "ACTIVE",
+   "CANCELLED",
+   "CHANGED",
+   "SUSPENDED",
+   "REACTIVATED",
+   "VIEW"
+ };
 
 // Circular buffer
 alarm_t buffer[BUFFER_SIZE];
@@ -56,11 +64,10 @@ int insert_idx = 0;
 int remove_idx = 0;
 
 // Synchronization
-sem_t empty;
-sem_t full;
 sem_t writing;
 pthread_mutex_t buffer_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t alarm_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t change_alarm_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t counter_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 // Thread declarations
@@ -112,6 +119,7 @@ alarm_t* init_alarm_node(int alarm_id, int group_id, int interval, char* msg) {
    node->link = NULL;
    node->type = 0;
    node->size = 0;
+   node->status = ACTIVE;
    // set data
    node->alarm_id = alarm_id;
    node->interval = interval;
@@ -177,17 +185,97 @@ void insert_alarm(alarm_t** list, int alarm_id, int group_id, int interval, char
   pthread_mutex_unlock(&alarm_mutex);
 }
 
+void remove_alarm_by_timestamp(alarm_t **list, int alarm_id, int status) {
+    alarm_t *current = *list;
+    alarm_t *prev = NULL;
+    alarm_t *found = NULL;
+    
+    // Find the node with the given alarm_id and other status
+    while (current != NULL) {
+        if (current->alarm_id == alarm_id && current->status != status) {
+            found = current;
+            break;
+        }
+        current = current->link;
+    }
 
-// Find start alarm by ID in alarm list
-//alarm_node_t* find_start_alarm(int alarm_id) {
-//    alarm_node_t* curr = alarm_list;
-//    while (curr) {
-//        if (curr->req.alarm_id == alarm_id && curr->req.type == START_ALARM)
-//            return curr;
-//        curr = curr->next;
-//    }
-//    return NULL;
-//}
+    // If target node with alarm_id not found, return
+    if (found == NULL) return;
+
+    current = *list;
+    prev = NULL;
+
+    while(current != NULL) {
+      // remove the node if they're not the same and the timestamp is less
+      if(found != current && current->alarm_id == found->alarm_id && current->timestamp < found->timestamp) {
+        if(prev == NULL) *list = current->link;
+        else { 
+          prev->link = current->link;
+        }
+        free(current);
+        break;
+      } else {
+        prev = current;
+      }
+      current = current->link;
+    }
+}
+ 
+void remove_alarm_by_state(alarm_t **list, int alarm_id, int status) {
+    alarm_t *current = *list;
+    alarm_t *prev = NULL;
+    alarm_t *found = NULL;
+
+    current = *list;
+    prev = NULL;
+
+    while(current != NULL) {
+      // remove the node if it's in that state and same alarm id
+      if(current->alarm_id == alarm_id && current->status == status) {
+        if(prev == NULL) *list = current->link;
+        else { 
+          prev->link = current->link;
+        }
+        free(current);
+        break;
+      } else {
+        prev = current;
+      }
+      current = current->link;
+    }
+}
+
+void change_alarm_by_timestamp(alarm_t **list, int alarm_id, int status, int target_state) {
+    alarm_t *current = *list;
+    alarm_t *prev = NULL;
+    alarm_t *found = NULL;
+    
+    // Find the node with the given alarm_id and other status
+    while (current != NULL) {
+        if (current->alarm_id == alarm_id && current->status != status) {
+            found = current;
+            break;
+        }
+        current = current->link;
+    }
+
+    // If target node with alarm_id not found, return
+    if (found == NULL) return;
+
+    current = *list;
+    prev = NULL;
+
+    while(current != NULL) {
+      // remove the node if they're not the same and the timestamp is less
+      if(found != current && current->alarm_id == found->alarm_id && current->timestamp < found->timestamp) {
+        current->status = target_state;
+        break;
+      } else {
+        prev = current;
+      }
+      current = current->link;
+    }
+}
 
 // Consumer thread function
 void* consumer_thread_func(void* arg) {
@@ -258,7 +346,11 @@ void* consumer_thread_func(void* arg) {
 
 //// Change Alarm Thread
 void* change_alarm_thread_func(void* arg) {
-  int i = 3;
+  while(1) {
+    int status = pthread_cond_wait(&change_alarm_cond, &change_alarm_mutex);
+    if(status != 0) err_abort(status, "cond_wait in change_alarms_thread");
+
+  }
 }
 
 // ========================= VIEW ALARMS THREAD =========================
@@ -290,7 +382,6 @@ int main() {
         printf("Alarm> ");
         if (fgets(line, sizeof(line), stdin) == NULL) break;
         parse_and_insert_request(line);
-
         sleep(1); // let other threads finish
         
     }
