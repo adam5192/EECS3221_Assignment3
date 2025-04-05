@@ -540,6 +540,7 @@ void* start_alarm_thread_func(void* arg) {
  }
 void* remove_alarm_thread_func(void* arg) { }
 void* suspend_reactivate_thread_func(void* arg) { }
+void* display_alarm_thread_func(void* arg) { pthread_exit(NULL);}
 
  // ========================= VIEW ALARMS THREAD =========================
 //void *view_alarms_thread_func(void *arg) {
