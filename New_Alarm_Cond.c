@@ -77,9 +77,12 @@ alarm_t* change_alarm_list = NULL;
 
 // Mutex and condition variable for change alarm list
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_cond_t change_alarm_cond = PTHREAD_COND_INITIALIZER;
-pthread_cond_t view_alarm_cond = PTHREAD_COND_INITIALIZER;
 pthread_cond_t insert_buffer_cond = PTHREAD_COND_INITIALIZER;
+pthread_cond_t start_alarm_cond = PTHREAD_COND_INITIALIZER;
+pthread_cond_t change_alarm_cond = PTHREAD_COND_INITIALIZER;
+pthread_cond_t cancel_alarm_cond = PTHREAD_COND_INITIALIZER;
+pthread_cond_t suspend_alarm_cond = PTHREAD_COND_INITIALIZER;
+pthread_cond_t view_alarm_cond = PTHREAD_COND_INITIALIZER;
 
 void* consumer_thread_func(void* arg);
 void* start_alarm_thread_func(void* arg);
@@ -204,25 +207,30 @@ void* consumer_thread_func(void* arg) {
           case START_ALARM:
             printf("Start_Alarm( <alarm_id>) Inserted by Consumer Thread <thread-id> Into Alarm List: Group(<group_id>) <Time_Stamp interval time message>\n");
             insert_alarm(&alarm_list, req.alarm_id, req.group_id, req.interval, req.message);
+            pthread_cond_signal(&start_alarm_cond);
           break;
           case CHANGE_ALARM:
             insert_alarm(&change_alarm_list, req.alarm_id, req.group_id, req.interval, req.message);
             printf("Change Alarm (<alarm_id>) Inserted by Consumer Thread<thread-id> into Separate Change Alarm Request List: Group(<group_id>) <Time_Stamp interval time message>\n");
+            pthread_cond_signal(&change_alarm_cond);
           break;
           case CANCEL_ALARM:
             printf("Cancel Alarm( <alarm_id>) Inserted by Consumer Thread <thread-id> Into Alarm List: Group(<group_id>) <Time_Stamp interval time message>\n");
             insert_alarm(&alarm_list, req.alarm_id, req.group_id, req.interval, req.message);
+            pthread_cond_signal(&cancel_alarm_cond);
           case SUSPEND_ALARM:
             printf("Cancel Alarm( <alarm_id>) Inserted by Consumer Thread <thread-id> Into Alarm List: Group(<group_id>) <Time_Stamp interval time message>\n");
             insert_alarm(&alarm_list, req.alarm_id, req.group_id, req.interval, req.message);
+            pthread_cond_signal(&suspend_alarm_cond);
           break;
           case REACTIVATE_ALARM:
             printf("Cancel Alarm( <alarm_id>) Inserted by Consumer Thread <thread-id> Into Alarm List: Group(<group_id>) <Time_Stamp interval time message>\n");
-            insert_alarm(&alarm_list, req.alarm_id, req.group_id, req.interval, req.message);
+            pthread_cond_signal(&suspend_alarm_cond);
           break;
           case VIEW_ALARMS:
             printf("Cancel Alarm( <alarm_id>) Inserted by Consumer Thread <thread-id> Into Alarm List: Group(<group_id>) <Time_Stamp interval time message>\n");
             insert_alarm(&alarm_list, req.alarm_id, req.group_id, req.interval, req.message);
+            pthread_cond_signal(&view_alarm_cond);
           break;
         }
 
@@ -243,7 +251,7 @@ void* consumer_thread_func(void* arg) {
 
         reader_count--;
         if (reader_count == 0) {
-            sem_post(&writing); 
+            sem_post(&writing);  // when no readers we can write
         }
     }
 }
@@ -304,7 +312,6 @@ void parse_and_insert_request(char* line) {
         sscanf(line, "Start_Alarm(%d): Group(%d) %d %[^\n]", &req.alarm_id, &req.group_id, &req.interval, req.message);
     } else if (strncmp(line, "Change_Alarm(", 13) == 0) {
         req.type = CHANGE_ALARM;
-        sscanf(line, "Change_Alarm(%d): Group(%d) %d %[^\n]", &req.alarm_id, &req.group_id, &req.interval, req.message);
     } else if (strncmp(line, "Cancel_Alarm(", 13) == 0) {
         req.type = CANCEL_ALARM;
         sscanf(line, "Cancel_Alarm(%d)", &req.alarm_id);
