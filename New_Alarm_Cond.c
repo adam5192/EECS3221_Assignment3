@@ -39,6 +39,17 @@ typedef struct alarm_tag {
     struct alarm_tag* link;
 } alarm_t;
 
+typedef struct change_alarm_tag {
+    request_type_t type;
+    int alarm_id;
+    int group_id;
+    int interval;
+    time_t timestamp;
+    char message[MAX_MSG_LEN];
+    int size;
+    struct alarm_tag* link;
+} change_alarm_t;
+
 // Circular buffer
 alarm_t buffer[BUFFER_SIZE];
 int insert_idx = 0;
@@ -62,6 +73,7 @@ pthread_t remove_alarm_thread;
 pthread_t view_alarm_thread;
 
 alarm_t* alarm_list = NULL;
+alarm_t* change_alarm_list = NULL;
 
 // Mutex and condition variable for change alarm list
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -163,29 +175,6 @@ void insert_alarm(alarm_t** list, int alarm_id, int group_id, int interval, char
 }
 
 
-//// Insert into change alarm list (sorted by timestamp)
-//void insert_change_alarm(alarm_request_t req) {
-//    pthread_mutex_lock(&change_alarm_mutex);
-//
-//    alarm_node_t* node = malloc(sizeof(alarm_node_t));
-//    node->req = req;
-//    node->next = NULL;
-//
-//    if (!change_alarm_list || difftime(req.timestamp, change_alarm_list->req.timestamp) < 0) {
-//        node->next = change_alarm_list;
-//        change_alarm_list = node;
-//    } else {
-//        alarm_node_t* curr = change_alarm_list;
-//        while (curr->next && difftime(req.timestamp, curr->next->req.timestamp) >= 0)
-//            curr = curr->next;
-//        node->next = curr->next;
-//        curr->next = node;
-//    }
-//
-//    pthread_cond_signal(&change_alarm_cond);
-//    pthread_mutex_unlock(&change_alarm_mutex);
-//}
-
 // Find start alarm by ID in alarm list
 //alarm_node_t* find_start_alarm(int alarm_id) {
 //    alarm_node_t* curr = alarm_list;
@@ -211,8 +200,21 @@ void* consumer_thread_func(void* arg) {
         pthread_mutex_unlock(&buffer_mutex);
         const char* req_type = REQUEST_TYPE_LOOKUP[req.type];
 
-        insert_alarm(&alarm_list, req.alarm_id, req.group_id, req.interval, req.message);
+        switch(req.type) {
+          case START_ALARM:
+            printf("Start_Alarm( <alarm_id>) Inserted by Consumer Thread <thread-id> Into Alarm List: Group(<group_id>) <Time_Stamp interval time message>\n");
+            insert_alarm(&alarm_list, req.alarm_id, req.group_id, req.interval, req.message);
+          break;
+          case CHANGE_ALARM:
+            insert_alarm(&change_alarm_list, req.alarm_id, req.group_id, req.interval, req.message);
+            printf("Change Alarm (<alarm_id>) Inserted by Consumer Thread<thread-id> into Separate Change Alarm Request List: Group(<group_id>) <Time_Stamp interval time message>\n");
+          break;
+
+
+        }
         print_alarm_list(alarm_list);
+        printf("CHANGE ALARM LIST\n");
+        print_alarm_list(change_alarm_list);
 
         printf("Consumer Thread has Retrieved Alarm_Request_Type <%s> Request (%d) at %ld: %ld from Circular_Buffer Index: %d\n",
            req_type, 
