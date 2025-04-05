@@ -47,8 +47,10 @@ int remove_idx = 0;
 // Synchronization
 sem_t empty;
 sem_t full;
+sem_t writing;
 pthread_mutex_t buffer_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t alarm_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t counter_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 // Thread declarations
 pthread_t main_thread;
@@ -62,9 +64,10 @@ pthread_t view_alarm_thread;
 alarm_t* alarm_list = NULL;
 
 // Mutex and condition variable for change alarm list
-pthread_mutex_t change_alarm_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t change_alarm_cond = PTHREAD_COND_INITIALIZER;
 pthread_cond_t view_alarm_cond = PTHREAD_COND_INITIALIZER;
+pthread_cond_t insert_buffer_cond = PTHREAD_COND_INITIALIZER;
 
 void* consumer_thread_func(void* arg);
 void* start_alarm_thread_func(void* arg);
@@ -78,6 +81,7 @@ void parse_and_insert_request(char* line);
 alarm_t* init_alarm_node(int alarm_id, int group_id, int interval, char* msg);
 void print_alarm_list(alarm_t* node);
 
+int reader_count = 0;
 
 //request_type_t type;
 //int alarm_id;
@@ -196,25 +200,37 @@ void insert_alarm(alarm_t** list, int alarm_id, int group_id, int interval, char
 // Consumer thread function
 void* consumer_thread_func(void* arg) {
     while (1) {
-        sem_wait(&full);
-        pthread_mutex_lock(&buffer_mutex);
+        pthread_cond_wait(&insert_buffer_cond, &buffer_mutex);  // Signal the waiting thread
+        reader_count++;
+        // first reader needs to lock out the insert thread
+        if(reader_count == 1) {
+          sem_wait(&writing);
+        }
 
         alarm_t req = buffer[remove_idx];
+        pthread_mutex_unlock(&buffer_mutex);
+        const char* req_type = REQUEST_TYPE_LOOKUP[req.type];
+        printf("Consumer Thread has Retrieved Alarm_Request_Type <%s> Request (%d) at %ld: %ld from Circular_Buffer Index: %d\n",
+           req_type, 
+           req.alarm_id, 
+           time(NULL), 
+           req.timestamp, 
+           remove_idx
+        );
+        printf("Above <%d> is the Circular-Buffer array index from which the consumer thread retrieved the alarm request. <%s> can be either “Start_Alarm”, or “Change_Alarm”, or “Cancel_Alarm”, or “Suspend_Alarm”, or “Reactivate_Alarm”, or “View Alarms\n", remove_idx, req_type);
+
         remove_idx = (remove_idx + 1) % BUFFER_SIZE;
 
-        pthread_mutex_unlock(&buffer_mutex);
-        sem_post(&empty);
-
-        printf("Consumer Thread has Retrieved Alarm_Request_Type <%s> Request (%d) at %ld: %ld from Circular_Buffer Index: %d\n",
-               REQUEST_TYPE_LOOKUP[req.type], req.alarm_id, time(NULL), req.timestamp, (remove_idx - 1 + BUFFER_SIZE) % BUFFER_SIZE);
+        reader_count--;
+        if (reader_count == 0) {
+            sem_post(&writing); 
+        }
     }
 }
 
 //// Change Alarm Thread
 void* change_alarm_thread_func(void* arg) {
-    while (1) {
-
-    }
+  int i = 3;
 }
 
 // ========================= VIEW ALARMS THREAD =========================
@@ -229,8 +245,8 @@ void *view_alarm_thread_func(void *arg) {
 
 int main() {
     // Init semaphores
-    sem_init(&empty, 0, BUFFER_SIZE);
-    sem_init(&full, 0, 0);
+    sem_init(&writing, 0, 1);
+    pthread_mutex_init(&mutex, NULL);
 
     // Start consumer and change alarm threads
     pthread_create(&consumer_thread, NULL, consumer_thread_func, NULL);
@@ -246,39 +262,13 @@ int main() {
         printf("Alarm> ");
         if (fgets(line, sizeof(line), stdin) == NULL) break;
         parse_and_insert_request(line);
+        sleep(1); // let other threads finish
     }
 
     pthread_join(consumer_thread, NULL);
     pthread_join(change_alarm_thread, NULL);
     return 0;
 }
-
-//request_type_t type;
-//int alarm_id;
-//int group_id;
-//int interval;
-//time_t timestamp;
-//char message[MAX_MSG_LEN];
-void print_alarm_list(alarm_t* list) {
-   alarm_t* temp = list;
-   int count = 1;
- 
-   printf("BEGIN\n");
-   while(temp != NULL) {
-     printf("node #: %d, alarm_id: %d, group_id: %d, interval: %d, message: %s, pointer: %p\n", 
-         count,
-         temp->alarm_id, 
-         temp->group_id, 
-         temp->interval, 
-         ctime(&temp->timestamp), 
-         temp->message, 
-         temp
-     );
-     temp = temp->link;
-     ++count;
-   }
-   printf("END\n");
- }
 
 // Parse user input and push to circular buffer
 void parse_and_insert_request(char* line) {
@@ -311,16 +301,51 @@ void parse_and_insert_request(char* line) {
         return;
     }
 
-    sem_wait(&empty);
+    sem_wait(&writing);
     pthread_mutex_lock(&buffer_mutex);
 
     buffer[insert_idx] = req;
-    printf("Main Thread has Inserted Alarm_Request_Type <%s> Request (%d) at %ld: %ld into Circular_Buffer Index: %d\n",
-           REQUEST_TYPE_LOOKUP[req.type], req.alarm_id, time(NULL), req.timestamp, insert_idx);
+    time_t now = time(NULL);
+    printf("Main Thread has Inserted Alarm_Request_Type <%s> Request (%d) at %s: %s into Circular_Buffer Index: %d\n",
+           REQUEST_TYPE_LOOKUP[req.type], 
+           req.alarm_id, 
+           ctime(&now), 
+           ctime(&req.timestamp), 
+           insert_idx
+    );
+
     insert_idx = (insert_idx + 1) % BUFFER_SIZE;
 
     pthread_mutex_unlock(&buffer_mutex);
-    sem_post(&full);
+    pthread_cond_signal(&insert_buffer_cond);
+    sem_post(&writing);
+}
+
+//request_type_t type;
+//int alarm_id;
+//int group_id;
+//int interval;
+//time_t timestamp;
+//char message[MAX_MSG_LEN];
+void print_alarm_list(alarm_t* list) {
+   alarm_t* temp = list;
+   int count = 1;
+ 
+   printf("BEGIN\n");
+   while(temp != NULL) {
+     printf("node #: %d, alarm_id: %d, group_id: %d, interval: %d, message: %s, pointer: %p\n", 
+         count,
+         temp->alarm_id, 
+         temp->group_id, 
+         temp->interval, 
+         ctime(&temp->timestamp), 
+         temp->message, 
+         temp
+     );
+     temp = temp->link;
+     ++count;
+   }
+   printf("END\n");
 }
 
 /* TODO */
