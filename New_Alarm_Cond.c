@@ -71,7 +71,6 @@ pthread_mutex_t change_alarm_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t counter_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 // Thread declarations
-pthread_t main_thread;
 pthread_t consumer_thread;
 pthread_t start_alarm_thread;
 pthread_t change_alarm_thread;
@@ -468,8 +467,118 @@ void print_alarm_list(alarm_t* list) {
    printf("END\n");
 }
 
-/* TODO */
-void* start_alarm_thread_func(void* arg) { return NULL; }
-void* suspend_reactivate_thread_func(void* arg) { return NULL; }
-void* remove_alarm_thread_func(void* arg) { return NULL; }
-void* display_alarm_thread_func(void* arg) { return NULL; }
+void* start_alarm_thread_func(void* arg) { }
+void* remove_alarm_thread_func(void* arg) { }
+void* suspend_reactivate_thread_func(void* arg) { }
+
+ // ========================= VIEW ALARMS THREAD =========================
+//void *view_alarms_thread_func(void *arg) {
+//  while (1) {
+//    // need to block till we have a view request
+//    int status = pthread_cond_wait(&view_alarm_cond, &alarm_mutex);
+//    if(status != 0) err_abort(status, "cond_wait in view_alarmas_thread");
+//    alarm_t* list = alarm_list;
+//    time_t now = time(NULL);
+//    int count = 1;
+//
+//    printf("View Alarms at View Time <%s>:\n", ctime(&now));
+//    while(list != NULL) {
+//      printf(view_thread_alarm_msg,
+//        count,
+//        list->alarm_id,
+//        list->req_type,
+//        ctime(&list->timestamp),
+//        list->timestamp,
+//        list->message,
+//        alarm_status_lookup[list->status],
+//        list->display_thread
+//      );
+//      ++count;
+//      list = list->link;
+//    }
+//    long id = pthread_self();
+//    printf("View Alarms request <%s> Alarm Requests Viewed at View Time <%s>\nprinted by View Alarms Thread %ld\n",
+//      ctime(&view_timestamp),
+//      ctime(&now),
+//      id
+//    );
+//    // remove view request at the end
+//    remove_alarm_by_state(&alarm_list, manage_alarm_id, VIEW);
+//    sleep(1);
+//  }
+//}
+// 
+// // ========================= DISPLAY ALARM THREAD =========================
+// void *display_alarm_thread_func(void *arg) {
+//  pthread_t thread_id = pthread_self();
+//
+//  while (1) {
+//      pthread_mutex_lock(&alarm_mutex);
+//      alarm_t *current = alarm_list;
+//      int active_alarms = 0;
+//
+//      while (current != NULL) {
+//          if (current->display_thread == thread_id) { 
+//              time_t current_time = time(NULL);
+//
+//              // Handle Expired Alarm
+//              if (current->timestamp + current->seconds <= current_time) {
+//                  printf("Display Alarm Thread %lu Stopped Printing Expired Alarm(%d) at %ld: %s\n",
+//                         thread_id, current->alarm_id, current_time, current->message);
+//                  current->display_thread = 0; // Mark as unassigned
+//                  current->status = CANCELLED;
+//                  continue;
+//              }
+//
+//              switch(current->status) {
+//                case SUSPENDED:
+//                  if (current->display_thread != 0) {  // Ensures message prints only once
+//                      printf("Alarm(%d) Print Suspended at %ld: %s\n",
+//                             current->alarm_id, current_time, current->message);
+//                      current->display_thread = 0; // Mark as stopped
+//                  }
+//                  break;
+//                case REACTIVATED:
+//                  printf("Alarm(%d) Print Reactivated at %ld: %s\n",
+//                         current->alarm_id, current_time, current->message);
+//                  current->status = ACTIVE;
+//                  break;
+//                case CANCELLED:
+//                  printf("Display Alarm Thread %lu Stopped Printing Cancelled Alarm(%d) at %ld: %s\n",
+//                         thread_id, current->alarm_id, current_time, current->message);
+//                  current->display_thread = 0;
+//                  break;
+//                case CHANGED:
+//                  printf("Display Alarm Thread %lu Printing Changed Alarm(%d) at %ld: %s\n",
+//                         thread_id, current->alarm_id, current_time, current->message);
+//                  current->status = ACTIVE;
+//                  break;
+//                default:
+//                  // Print Active Alarm
+//                  printf("Alarm (%d) Printed by Alarm Display Thread %lu at %ld: %s\n",
+//                         current->alarm_id, thread_id, current_time, current->message);
+//                  active_alarms++;
+//              }
+//          }
+//          current = current->link;
+//      }
+//
+//      pthread_mutex_unlock(&alarm_mutex);
+//
+//      // If no alarms are assigned, exit the thread and clear thread_pool
+//      if (active_alarms == 0) {
+//          long id = pthread_self();
+//          display_thread_t* thread_pool = (display_thread_t*)arg;
+//          printf("Display Alarm Thread %lu Exiting at %ld\n", thread_id, time(NULL));
+//          // decrement the thread pool thread with same id
+//          for(int i = 0; i < 8; ++i) {
+//            if(thread_pool[i].display_alarm_thread == id) {
+//              thread_pool[i].display_alarm_thread = 0;
+//              thread_pool[i].assigned = 0;
+//            }
+//          }
+//          pthread_exit(NULL);
+//      }
+//      sleep(5); // Print every 5 seconds
+//  }
+//}
