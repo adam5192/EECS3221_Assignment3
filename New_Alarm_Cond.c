@@ -28,6 +28,12 @@ typedef enum alarm_status {
   VIEW
 } alarm_status_t;
  
+ // Alarm structure to hold alarm details
+ typedef struct display_thread {
+   pthread_t display_alarm_thread;
+   int assigned;
+ } display_thread_t;
+
 typedef struct alarm_tag {
     request_type_t type;
     int alarm_id;
@@ -38,6 +44,7 @@ typedef struct alarm_tag {
     int size;
     int status;
     struct alarm_tag* link;
+    display_thread_t thread;
 } alarm_t;
 
 char* REQUEST_TYPE_LOOKUP[] = {
@@ -57,6 +64,8 @@ const char* alarm_status_lookup[] = {
    "REACTIVATED",
    "VIEW"
  };
+
+
 
 // Circular buffer
 alarm_t buffer[BUFFER_SIZE];
@@ -483,8 +492,145 @@ void print_alarm_list(alarm_t* list) {
 }
 
 void* start_alarm_thread_func(void* arg) { }
-void* remove_alarm_thread_func(void* arg) { }
-void* suspend_reactivate_thread_func(void* arg) { }
+// ========================= Start ALARM THREAD =========================
+//void* start_alarm_thread_func(void* arg) {
+//
+//    display_thread_t display_thread_pool[8]; // Allocate pool of 8 display threads
+//    for (int i = 0; i < 8; ++i) {
+//        display_thread_pool[i].alarm_count = 0;
+//        display_thread_pool[i].group_id = -1; // Initially unassigned
+//    }
+//
+//    while (1) {
+//        // Wait for a Start_Alarm to be added to alarm_list
+//        int status = pthread_cond_wait(&start_alarm_cond, &alarm_mutex);
+//        if (status != 0) err_abort(status, "cond_wait in start_alarm_thread");
+//
+//        alarm_t* list = alarm_list;
+//
+//        while (list != NULL) {
+//            if (list->type == START_ALARM && list->display_thread == 0) {
+//                // try to assign this Start_Alarm to a display thread
+//                for (int i = 0; i < 8; ++i) {
+//                    display_thread_t* thread = &display_thread_pool[i];
+//
+//                    // if creating new thread, assign group_id
+//                    if (thread->alarm_count == 0) {
+//                        thread->group_id = list->group_id;  // Assign group ID to thread
+//
+//                        pthread_create(&thread->display_alarm_thread, NULL, display_alarm_thread_func, NULL);
+//
+//                        // assign alarm to thread
+//                        thread->alarm_count++;
+//                        list->display_thread = thread->display_alarm_thread;
+//
+//                        printf("Start Alarm Thread Created New Display Alarm Thread <%lu> For Alarm(%d) at %ld: Group(%d) %ld %d %s\n",
+//                            (unsigned long)thread->display_alarm_thread,
+//                            list->alarm_id,
+//                            time(NULL),
+//                            list->group_id,
+//                            list->timestamp,
+//                            list->interval,
+//                            list->message);
+//                        break;
+//
+//                    } else if (thread->group_id == list->group_id && thread->alarm_count < 2) {
+//                        // assign to existing thread for the same group
+//                        thread->alarm_count++;
+//                        list->display_thread = thread->display_alarm_thread;
+//
+//                        printf("Alarm (%d) Assigned to Display Thread(<%lu>) at %ld: Group(%d) %ld %d %s\n",
+//                            list->alarm_id,
+//                            (unsigned long)thread->display_alarm_thread,
+//                            time(NULL),
+//                            list->group_id,
+//                            list->timestamp,
+//                            list->interval,
+//                            list->message);
+//                        break;
+//                    }
+//                }
+//            }
+//            list = list->link;
+//        }
+//    }
+//}
+
+void* suspend_reactivate_thread_func(void* arg) {}
+void* remove_alarm_thread_func(void* arg) 
+{
+    while (1) 
+    {
+        sleep(1);  
+        const time_t current_time = time(NULL);
+        
+        pthread_mutex_lock(&alarm_mutex);
+        
+        alarm_t** current = &alarm_list;
+        
+        // process all alarms in the list
+        while (*current != NULL) 
+        {
+            alarm_t* this_alarm = *current;
+            int alarm_removed = 0;
+            
+            // process cancellation requests
+            if (this_alarm->type == CANCEL_ALARM) 
+            {
+                alarm_t** search_ptr = &alarm_list;
+                
+                // look for matching start alarm 
+                while (*search_ptr != NULL) 
+                {
+                    alarm_t* candidate = *search_ptr;
+                    
+                    // if alarm is matching and has earlier time stamp remove 
+                    if (candidate->type == START_ALARM &&
+                        candidate->alarm_id == this_alarm->alarm_id &&
+                        difftime(candidate->timestamp, this_alarm->timestamp) < 0) 
+                    {
+                        
+                        *search_ptr = candidate->link;
+                        
+                        printf("Alarm(%d) Cancelled at %ld | Group(%d) | Interval: %ds\n",
+                              candidate->alarm_id, current_time, 
+                              candidate->group_id, candidate->interval);
+                              
+                        free(candidate);
+                        break;
+                    }
+                    search_ptr = &(*search_ptr)->link;
+                }
+                
+                *current = this_alarm->link;
+                free(this_alarm);
+                alarm_removed = 1;
+            }
+            // check for expired alarms
+            else if (this_alarm->type == START_ALARM && 
+                    difftime(current_time, this_alarm->timestamp) >= this_alarm->interval) 
+            {
+                *current = this_alarm->link;
+                
+                printf("Alarm(%d) Expired at %ld | Group(%d) | Interval: %ds\n",
+                      this_alarm->alarm_id, current_time,
+                      this_alarm->group_id, this_alarm->interval);
+                      
+                free(this_alarm);
+                alarm_removed = 1;
+            }
+            
+            if (!alarm_removed) {
+                current = &(*current)->link;
+            }
+        }
+        
+        pthread_mutex_unlock(&alarm_mutex);
+    }
+    
+    return NULL;
+}
+
 
  // ========================= VIEW ALARMS THREAD =========================
 //void *view_alarms_thread_func(void *arg) {
