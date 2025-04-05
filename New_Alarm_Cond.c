@@ -210,6 +210,10 @@ void* consumer_thread_func(void* arg) {
         alarm_t req = buffer[remove_idx];
         pthread_mutex_unlock(&buffer_mutex);
         const char* req_type = REQUEST_TYPE_LOOKUP[req.type];
+
+        insert_alarm(&alarm_list, req.alarm_id, req.group_id, req.interval, req.message);
+        print_alarm_list(alarm_list);
+
         printf("Consumer Thread has Retrieved Alarm_Request_Type <%s> Request (%d) at %ld: %ld from Circular_Buffer Index: %d\n",
            req_type, 
            req.alarm_id, 
@@ -262,7 +266,9 @@ int main() {
         printf("Alarm> ");
         if (fgets(line, sizeof(line), stdin) == NULL) break;
         parse_and_insert_request(line);
+
         sleep(1); // let other threads finish
+        
     }
 
     pthread_join(consumer_thread, NULL);
